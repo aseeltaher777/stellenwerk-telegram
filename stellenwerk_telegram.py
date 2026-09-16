@@ -7,59 +7,109 @@ import urllib.request
 from datetime import datetime
 from html.parser import HTMLParser
 
-
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "-1004179589286")
 
 BASE = "https://www.stellenwerk.de"
-CITIES = ["hamburg", "kiel", "flensburg"]
 
-JOBS_PER_CITY = 10
+CITIES = [
+    "hamburg",
+    "kiel",
+    "flensburg"
+]
+
+# --------------------------------------------------
+# FILTER KEYWORDS
+# Partial matches are allowed.
+# "Ingenieur" matches "Ingenieurbüro", etc.
+# --------------------------------------------------
+
+KEYWORDS = [
+    "Maschinenbau",
+    "Verfahrenstechnik",
+    "Technik",
+    "Prozess",
+    "Ingenieur",
+    "Automatisierung",
+    "Mechatronik",
+    "Robotik",
+    "Elektronik",
+    "Energie"
+]
+
+# Scan more jobs so relevant jobs farther down the page
+# are not missed.
+MAX_JOBS_TO_SCAN_PER_CITY = 100
 
 
-# ─────────────────────────────────────
-# HTML
-# ─────────────────────────────────────
+# --------------------------------------------------
+# HTML PARSERS
+# --------------------------------------------------
 
 class LinkParser(HTMLParser):
+
     def __init__(self):
         super().__init__()
+
         self.links = []
         self.href = None
         self.text = []
 
     def handle_starttag(self, tag, attrs):
+
         if tag == "a":
+
             self.href = dict(attrs).get("href")
             self.text = []
 
     def handle_data(self, data):
+
         if self.href is not None:
             self.text.append(data)
 
     def handle_endtag(self, tag):
+
         if tag == "a" and self.href is not None:
-            text = " ".join(" ".join(self.text).split())
-            self.links.append((self.href, text))
+
+            text = " ".join(
+                " ".join(self.text).split()
+            )
+
+            self.links.append(
+                (self.href, text)
+            )
+
             self.href = None
             self.text = []
 
 
 class TextParser(HTMLParser):
+
     def __init__(self):
         super().__init__()
+
         self.parts = []
 
     def handle_data(self, data):
-        value = " ".join(data.split())
+
+        value = " ".join(
+            data.split()
+        )
 
         if value:
             self.parts.append(value)
 
 
+# --------------------------------------------------
+# DOWNLOAD PAGE
+# --------------------------------------------------
+
 def fetch(url):
+
     request = urllib.request.Request(
+
         url,
+
         headers={
             "User-Agent":
             "Mozilla/5.0 (X11; Linux x86_64) "
@@ -67,26 +117,78 @@ def fetch(url):
         }
     )
 
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return response.read().decode("utf-8", "replace")
+    with urllib.request.urlopen(
+        request,
+        timeout=30
+    ) as response:
+
+        return response.read().decode(
+            "utf-8",
+            "replace"
+        )
 
 
 def page_to_text(page):
+
     parser = TextParser()
+
     parser.feed(page)
 
-    return " ".join(parser.parts)
+    return " ".join(
+        parser.parts
+    )
 
 
-# ─────────────────────────────────────
-# FIND JOB LINKS
-# ─────────────────────────────────────
+# --------------------------------------------------
+# KEYWORD FILTER
+# --------------------------------------------------
+
+def find_matching_keywords(text):
+
+    """
+    Partial + case-insensitive matching.
+
+    Examples:
+
+    Ingenieur
+        -> Ingenieurbüro
+        -> Ingenieurwesen
+        -> Bauingenieur
+
+    Prozess
+        -> Prozesstechnik
+        -> Prozessoptimierung
+
+    Technik
+        -> Techniker
+        -> Elektrotechnik
+    """
+
+    text = text.casefold()
+
+    matches = []
+
+    for keyword in KEYWORDS:
+
+        if keyword.casefold() in text:
+
+            matches.append(keyword)
+
+    return matches
+
+
+# --------------------------------------------------
+# GET JOB LINKS
+# --------------------------------------------------
 
 def get_job_links(city):
 
-    page = fetch(f"{BASE}/{city}")
+    page = fetch(
+        f"{BASE}/{city}"
+    )
 
     parser = LinkParser()
+
     parser.feed(page)
 
     jobs = []
@@ -97,11 +199,15 @@ def get_job_links(city):
         if not href:
             continue
 
-        url = urllib.parse.urljoin(BASE, href)
+        url = urllib.parse.urljoin(
+            BASE,
+            href
+        )
 
         if f"/{city}/" not in url:
             continue
 
+        # Stellenwerk job URLs contain a date + job ID
         if not re.search(
             r"-\d{6}-\d+(?:[/?#]|$)",
             url
@@ -114,41 +220,59 @@ def get_job_links(city):
         seen.add(url)
 
         title = re.sub(
+
             r"^(Privatanzeige\s+)?"
             r"vor\s+\S+(?:\s+\S+)?\s+",
+
             "",
+
             title,
+
             flags=re.I
         )
 
         jobs.append({
+
             "title": title.strip(),
+
             "url": url
+
         })
 
-        if len(jobs) >= JOBS_PER_CITY:
+        if (
+            len(jobs)
+            >= MAX_JOBS_TO_SCAN_PER_CITY
+        ):
+
             break
 
     return jobs
 
 
-# ─────────────────────────────────────
-# EXTRACT DETAILS
-# ─────────────────────────────────────
+# --------------------------------------------------
+# EXTRACT JOB DETAILS
+# --------------------------------------------------
 
 def extract_salary(text):
 
     patterns = [
-        r"\d+(?:[.,]\d+)?\s*(?:bis|-)\s*"
-        r"\d+(?:[.,]\d+)?\s*€\s*/\s*Stunde",
 
-        r"\d+(?:[.,]\d+)?\s*€\s*/\s*Stunde",
+        r"\d+(?:[.,]\d+)?\s*"
+        r"(?:bis|-)\s*"
+        r"\d+(?:[.,]\d+)?\s*€"
+        r"\s*/\s*Stunde",
 
-        r"\d+(?:[.,]\d+)?\s*€\s*/\s*Jahr",
+        r"\d+(?:[.,]\d+)?"
+        r"\s*€\s*/\s*Stunde",
 
-        r"\d+(?:[.,]\d+)?\s*€\s*pauschal",
+        r"\d+(?:[.,]\d+)?"
+        r"\s*€\s*/\s*Jahr",
+
+        r"\d+(?:[.,]\d+)?"
+        r"\s*€\s*pauschal",
 
         r"Nach Vereinbarung"
+
     ]
 
     for pattern in patterns:
@@ -160,6 +284,7 @@ def extract_salary(text):
         )
 
         if match:
+
             return match.group(0)
 
     return None
@@ -172,13 +297,16 @@ def extract_work_type(text):
         text,
         re.I
     ):
+
         return "🏠 Homeoffice möglich"
 
     if re.search(
-        r"full[- ]?remote|100\s*%\s*remote",
+        r"full[- ]?remote|"
+        r"100\s*%\s*remote",
         text,
         re.I
     ):
+
         return "🌐 Remote"
 
     if re.search(
@@ -186,6 +314,7 @@ def extract_work_type(text):
         text,
         re.I
     ):
+
         return "🏢 Vor Ort"
 
     return None
@@ -194,11 +323,13 @@ def extract_work_type(text):
 def extract_location(text, city):
 
     locations = [
+
         "Hamburg",
         "Kiel",
         "Flensburg",
         "Lübeck",
         "Schleswig-Holstein"
+
     ]
 
     for location in locations:
@@ -208,18 +339,22 @@ def extract_location(text, city):
             text,
             re.I
         ):
+
             return location
 
     return city.title()
 
 
-def extract_company(page_text, title):
+def extract_company(page_text):
 
-    # Try common Stellenwerk wording
     patterns = [
+
         r"Arbeitgeber\s*:?\s*([^|]{2,80})",
+
         r"Unternehmen\s*:?\s*([^|]{2,80})",
+
         r"Firma\s*:?\s*([^|]{2,80})"
+
     ]
 
     for pattern in patterns:
@@ -231,72 +366,132 @@ def extract_company(page_text, title):
         )
 
         if match:
+
             company = match.group(1)
 
             company = re.split(
-                r"(?:Standort|Vergütung|"
-                r"Arbeitsort|Kontakt|"
+
+                r"(?:Standort|"
+                r"Vergütung|"
+                r"Arbeitsort|"
+                r"Kontakt|"
                 r"Beschreibung)",
+
                 company,
+
                 maxsplit=1,
+
                 flags=re.I
+
             )[0]
 
-            company = company.strip(" :-")
+            company = company.strip(
+                " :-"
+            )
 
             if len(company) <= 80:
+
                 return company
 
     return None
 
 
-def get_job_details(job, city):
+# --------------------------------------------------
+# OPEN FULL JOB PAGE + FILTER
+# --------------------------------------------------
+
+def inspect_job(job, city):
 
     try:
 
-        page = fetch(job["url"])
-        text = page_to_text(page)
-
-        salary = extract_salary(text)
-        work_type = extract_work_type(text)
-        location = extract_location(text, city)
-        company = extract_company(
-            text,
-            job["title"]
+        page = fetch(
+            job["url"]
         )
 
+        page_text = page_to_text(
+            page
+        )
+
+        # IMPORTANT:
+        # Search BOTH title AND entire job page.
+        searchable_text = (
+
+            job["title"]
+            + " "
+            + page_text
+
+        )
+
+        matches = find_matching_keywords(
+            searchable_text
+        )
+
+        # No keyword = don't send this job
+        if not matches:
+
+            return None
+
         return {
-            "title": job["title"],
-            "company": company,
-            "salary": salary,
-            "location": location,
-            "work_type": work_type,
-            "url": job["url"]
+
+            "title":
+                job["title"],
+
+            "company":
+                extract_company(
+                    page_text
+                ),
+
+            "salary":
+                extract_salary(
+                    page_text
+                ),
+
+            "location":
+                extract_location(
+                    page_text,
+                    city
+                ),
+
+            "work_type":
+                extract_work_type(
+                    page_text
+                ),
+
+            "matches":
+                matches,
+
+            "url":
+                job["url"]
+
         }
 
-    except Exception:
+    except Exception as error:
 
-        return {
-            "title": job["title"],
-            "company": None,
-            "salary": None,
-            "location": city.title(),
-            "work_type": None,
-            "url": job["url"]
-        }
+        print(
+            "Could not inspect:",
+            job["url"],
+            error
+        )
+
+        return None
 
 
-# ─────────────────────────────────────
+# --------------------------------------------------
 # TELEGRAM FORMATTING
-# ─────────────────────────────────────
+# --------------------------------------------------
 
 def clean_title(title):
 
-    # Prevent enormous titles
-    title = " ".join(title.split())
+    title = " ".join(
+        title.split()
+    )
 
     if len(title) > 150:
-        title = title[:147] + "..."
+
+        title = (
+            title[:147]
+            + "..."
+        )
 
     return title
 
@@ -304,7 +499,9 @@ def clean_title(title):
 def format_job(job):
 
     title = html.escape(
-        clean_title(job["title"])
+        clean_title(
+            job["title"]
+        )
     )
 
     url = html.escape(
@@ -313,63 +510,113 @@ def format_job(job):
     )
 
     lines = [
+
         f"💼 <b>{title}</b>"
+
     ]
 
     if job["company"]:
+
         lines.append(
-            "🏢 " +
-            html.escape(job["company"])
+
+            "🏢 "
+            + html.escape(
+                job["company"]
+            )
+
         )
 
     if job["salary"]:
+
         lines.append(
-            "💰 " +
-            html.escape(job["salary"])
+
+            "💰 "
+            + html.escape(
+                job["salary"]
+            )
+
         )
 
     if job["location"]:
+
         lines.append(
-            "📍 " +
-            html.escape(job["location"])
+
+            "📍 "
+            + html.escape(
+                job["location"]
+            )
+
         )
 
     if job["work_type"]:
-        lines.append(job["work_type"])
+
+        lines.append(
+            job["work_type"]
+        )
+
+    # Show why this job matched
+    lines.append(
+
+        "🔎 "
+        + html.escape(
+            ", ".join(
+                job["matches"]
+            )
+        )
+
+    )
 
     lines.append("")
 
     lines.append(
-        f'🔗 <a href="{url}">'
-        f'Job ansehen</a>'
+
+        f'<a href="{url}">'
+        f'🔗 Job ansehen'
+        f'</a>'
+
     )
 
     return "\n".join(lines)
 
 
-# ─────────────────────────────────────
+# --------------------------------------------------
 # TELEGRAM
-# ─────────────────────────────────────
+# --------------------------------------------------
 
 def send_telegram(message):
 
     data = urllib.parse.urlencode({
-        "chat_id": CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": "true"
+
+        "chat_id":
+            CHAT_ID,
+
+        "text":
+            message,
+
+        "parse_mode":
+            "HTML",
+
+        "disable_web_page_preview":
+            "true"
+
     }).encode()
 
     url = (
+
         "https://api.telegram.org/bot"
         + BOT_TOKEN
         + "/sendMessage"
+
     )
 
     request = urllib.request.Request(
+
         url,
+
         data=data,
+
         method="POST"
+
     )
 
     with urllib.request.urlopen(
@@ -382,12 +629,87 @@ def send_telegram(message):
         )
 
         if not result.get("ok"):
-            raise RuntimeError(result)
+
+            raise RuntimeError(
+                result
+            )
 
 
-# ─────────────────────────────────────
+# --------------------------------------------------
+# SEND CITY
+# --------------------------------------------------
+
+def send_city(city, jobs, today):
+
+    message = (
+
+        "🎓 <b>STELLENWERK – PASSENDE JOBS</b>\n"
+
+        f"📅 {today}\n\n"
+
+        f"📍 <b>{city.upper()}</b>\n"
+
+        "━━━━━━━━━━━━━━━━━━\n\n"
+
+    )
+
+    if not jobs:
+
+        message += (
+
+            "Keine passenden Stellen "
+            "für deine Keywords gefunden."
+
+        )
+
+        send_telegram(message)
+
+        return
+
+    for job in jobs:
+
+        card = (
+
+            format_job(job)
+
+            + "\n\n"
+
+            "──────────────────"
+
+            "\n\n"
+
+        )
+
+        # Telegram maximum is 4096 chars
+        if (
+            len(message)
+            + len(card)
+            > 3800
+        ):
+
+            send_telegram(
+                message
+            )
+
+            message = (
+
+                f"📍 <b>"
+                f"{city.upper()} "
+                f"– Fortsetzung"
+                f"</b>\n\n"
+
+            )
+
+        message += card
+
+    send_telegram(
+        message
+    )
+
+
+# --------------------------------------------------
 # MAIN
-# ─────────────────────────────────────
+# --------------------------------------------------
 
 def main():
 
@@ -399,68 +721,58 @@ def main():
 
         try:
 
-            links = get_job_links(city)
-
-            jobs = [
-                get_job_details(job, city)
-                for job in links
-            ]
-
-            header = (
-                "🎓 <b>STELLENWERK JOBS</b>\n"
-                f"📅 {today}\n\n"
-                f"📍 <b>{city.upper()}</b>\n"
-                "━━━━━━━━━━━━━━━━━━\n\n"
+            links = get_job_links(
+                city
             )
 
-            message = header
+            jobs = []
 
-            if not jobs:
+            for job in links:
 
-                message += (
-                    "Keine Stellen gefunden."
+                relevant_job = inspect_job(
+                    job,
+                    city
                 )
 
-            for job in jobs:
+                if relevant_job:
 
-                card = (
-                    format_job(job)
-                    + "\n\n"
-                    "──────────────────"
-                    "\n\n"
-                )
-
-                # Telegram limit = 4096
-                if (
-                    len(message)
-                    + len(card)
-                    > 3800
-                ):
-
-                    send_telegram(message)
-
-                    message = (
-                        f"📍 <b>"
-                        f"{city.upper()} "
-                        f"– Fortsetzung"
-                        f"</b>\n\n"
+                    jobs.append(
+                        relevant_job
                     )
 
-                message += card
+            print(
 
-            send_telegram(message)
+                city,
+                "scanned:",
+                len(links),
+                "matched:",
+                len(jobs)
+
+            )
+
+            send_city(
+                city,
+                jobs,
+                today
+            )
 
         except Exception as error:
 
             send_telegram(
+
                 "⚠️ <b>Fehler</b>\n\n"
-                "Jobs für "
+
+                f"Jobs für "
                 f"{html.escape(city.title())} "
-                "konnten nicht geladen werden."
+                f"konnten nicht geladen werden."
+
                 "\n\n"
+
                 f"{html.escape(str(error))}"
+
             )
 
 
 if __name__ == "__main__":
+
     main()
